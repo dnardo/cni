@@ -22,6 +22,7 @@ import (
 	"runtime"
 	"syscall"
 
+	"github.com/containernetworking/cni/pkg/bridge"
 	"github.com/containernetworking/cni/pkg/ip"
 	"github.com/containernetworking/cni/pkg/ipam"
 	"github.com/containernetworking/cni/pkg/ns"
@@ -370,6 +371,21 @@ func cmdAdd(args *skel.CmdArgs) error {
 		}
 	}
 
+	if n.PromiscMode {
+		// Add ebtables rules to block duplicate packets.
+		mac := br.Attrs().HardwareAddr.String()
+		addrs, err := netlink.AddrList(br, syscall.AF_INET)
+		if err != nil {
+			return err
+		}
+		for _, a := range addrs {
+			nw := ip.Network(a.IPNet)
+			if err := bridge.AddDedupRules(mac, a.IP.String(), nw.String()); err != nil {
+				return err
+			}
+		}
+	}
+
 	// Refetch the bridge since its MAC address may change when the first
 	// veth is added or after its IP address is set
 	br, err = bridgeByName(n.BrName)
@@ -418,6 +434,12 @@ func cmdDel(args *skel.CmdArgs) error {
 		chain := utils.FormatChainName(n.Name, args.ContainerID)
 		comment := utils.FormatComment(n.Name, args.ContainerID)
 		err = ip.TeardownIPMasq(ipn, chain, comment)
+	}
+
+	if n.PromiscMode {
+		if err := bridge.DeleteDedupRules(); err != nil {
+			return err
+		}
 	}
 
 	return err
